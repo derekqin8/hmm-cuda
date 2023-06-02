@@ -65,33 +65,25 @@ class HiddenMarkovModel:
         # The (i, j)^th elements of probs and seqs are the max probability
         # of the prefix of length i ending in state j and the prefix
         # that gives this probability, respectively.
-        #
-        # For instance, probs[1][0] is the probability of the prefix of
-        # length 1 ending in state 0.
-        probs = [[0.0 for _ in range(self.L)] for _ in range(M + 1)]
+        probs = np.zeros((M + 1, self.L))
         seqs = [["" for _ in range(self.L)] for _ in range(M + 1)]
 
         for a in range(self.L):
-            probs[1][a] = self.O[a][x[0]] * self.A_start[a]
             seqs[1][a] += str(a)
 
+        probs[1, :] = self.O[:, x[0]].T * self.A_start
+
         for j in range(2, M + 1):
-            # compute each next y_a
             for a in range(self.L):
-                max_prob = 0
-                prev = ""
-                # iterate through previous sequences, this is y^{j-1}
-                for b in range(self.L):
-                    prob = probs[j - 1][b] * self.A[b][a] * self.O[a][x[j - 1]]
+                # TODO: use GPU element-wise multiplication
+                prob_vec = probs[j - 1, :] * self.A[:, a] * self.O[a, x[j - 1]]
 
-                    if prob > max_prob:
-                        max_prob = prob
-                        prev = seqs[j - 1][b]
+                probs[j, a] = np.max(prob_vec)
+                # TODO: use GPU argmax
+                seqs[j][a] = seqs[j - 1][np.argmax(prob_vec)] + str(a)
 
-                probs[j][a] = max_prob
-                seqs[j][a] = prev + str(a)
-
-        max_seq = seqs[M][probs[M].index(max(probs[M]))]
+        # TODO: use GPU argmax
+        max_seq = seqs[M][np.argmax(probs[M, :])]
         return max_seq
 
     def forward(self, x, normalize=False):
@@ -115,22 +107,18 @@ class HiddenMarkovModel:
         """
 
         M = len(x)  # Length of sequence.
-        alphas = [[0.0 for _ in range(self.L)] for _ in range(M + 1)]
+        alphas = np.zeros((M + 1, self.L))
 
-        for a in range(self.L):
-            alphas[1][a] = self.O[a][x[0]] * self.A_start[a]
+        alphas[1, :] = self.O[:, x[0]] * self.A_start
 
         for t in range(2, M + 1):
-            for a in range(self.L):
-                tot = 0
-                for b in range(self.L):
-                    tot += self.A[b][a] * self.O[a][x[t - 1]] * alphas[t - 1][b]
-
-                alphas[t][a] = tot
+            # TODO: GPU matrix multiplication and scalar multiplication
+            alphas[t, :] = alphas[t - 1, :] @ self.A * self.O[:, x[t - 1]]
 
             if normalize:
-                C = sum(alphas[t])
-                alphas[t] = [alpha / C for alpha in alphas[t]]
+                # TODO: GPU matrix operations
+                C = np.sum(alphas[t, :])
+                alphas[t, :] = alphas[t, :] / C
 
         return alphas
 
@@ -155,22 +143,18 @@ class HiddenMarkovModel:
         """
 
         M = len(x)  # Length of sequence.
-        betas = [[0.0 for _ in range(self.L)] for _ in range(M + 1)]
+        betas = np.zeros((M + 1, self.L))
 
-        for a in range(self.L):
-            betas[M][a] = 1.0
+        betas[M, :] = 1.0
 
         for t in range(M - 1, 0, -1):
-            for a in range(self.L):
-                tot = 0
-                for b in range(self.L):
-                    tot += self.A[a][b] * self.O[b][x[t]] * betas[t + 1][b]
-
-                betas[t][a] = tot
+            # TODO: replace with GPU matrix multiplication
+            betas[t, :] = (betas[t + 1, :] * self.O[:, x[t]]) @ self.A.T
 
             if normalize:
-                C = sum(betas[t])
-                betas[t] = [beta / C for beta in betas[t]]
+                # TODO: replace with GPU accelerated
+                C = np.sum(betas[t, :])
+                betas[t, :] = betas[t, :] / C
 
         return betas
 
@@ -196,6 +180,8 @@ class HiddenMarkovModel:
 
         # Calculate each element of A using the M-step formulas.
 
+        # TODO: This is all independent for each array index, so can be
+        #       parallelized
         for a in range(self.L):
             for b in range(self.L):
                 numerator = 0
@@ -206,7 +192,7 @@ class HiddenMarkovModel:
                             numerator += 1
                         if Y[i][j - 1] == a:
                             denominator += 1
-                self.A[a][b] = numerator / denominator
+                self.A[a, b] = numerator / denominator
 
         # Calculate each element of O using the M-step formulas.
 
@@ -220,7 +206,7 @@ class HiddenMarkovModel:
                             numerator += 1
                         if Y[i][j] == a:
                             denominator += 1
-                self.O[a][w] = numerator / denominator
+                self.O[a, w] = numerator / denominator
 
     def unsupervised_learning(self, X, N_iters):
         """
@@ -235,22 +221,15 @@ class HiddenMarkovModel:
         """
 
         N = len(X)
+        M = len(X[0])
 
         # j is 0 indexed for these 2 arrays
 
         # marginal_state[i][j][a] = P(y^j = a, x_i)
-        marginal_state = [
-            [[0.0 for _ in range(self.L)] for _ in range(len(x))] for x in X
-        ]
+        marginal_state = [np.zeros((len(x), self.L)) for x in X]
         # marginal_trans[i][j][a][b] = P(y^{j} = a, y^{j+1} = b, x_i)
         # starts at 1 and ends at M-1
-        marginal_trans = [
-            [
-                [[0.0 for _ in range(self.L)] for _ in range(self.L)]
-                for _ in range(len(x))
-            ]
-            for x in X
-        ]
+        marginal_trans = [np.zeros((len(x), self.L, self.L)) for x in X]
 
         for epoch in range(N_iters):
             for i in range(len(X)):
@@ -260,42 +239,28 @@ class HiddenMarkovModel:
                 betas = self.backward(X[i], True)
 
                 for j in range(1, len(X[i]) + 1):
-                    denominator = sum(
-                        [
-                            alphas[j][a_prime] * betas[j][a_prime]
-                            for a_prime in range(self.L)
-                        ]
-                    )
-                    for a in range(self.L):
-                        marginal_state[i][j - 1][a] = (
-                            alphas[j][a] * betas[j][a]
-                        ) / denominator
+                    denominator = alphas[j, :] @ betas[j, :].T
+
+                    marginal_state[i][j - 1, :] = (
+                        alphas[j, :] * betas[j, :]
+                    ) / denominator
 
                 for j in range(1, len(X[i])):
-                    denominator = sum(
-                        [
-                            sum(
-                                [
-                                    alphas[j][a_prime]
-                                    * betas[j + 1][b_prime]
-                                    * self.O[b_prime][X[i][j]]
-                                    * self.A[a_prime][b_prime]
-                                    for b_prime in range(self.L)
-                                ]
-                            )
-                            for a_prime in range(self.L)
-                        ]
+                    denominator = (
+                        alphas[j, :]
+                        @ self.A
+                        @ (betas[j + 1, :] * self.O[:, X[i][j]])
                     )
-                    for a in range(self.L):
-                        for b in range(self.L):
-                            marginal_trans[i][j - 1][a][b] = (
-                                alphas[j][a]
-                                * betas[j + 1][b]
-                                * self.O[b][X[i][j]]
-                                * self.A[a][b]
-                            ) / denominator
+
+                    marginal_trans[i][j - 1, :, :] = (
+                        (alphas[j, :] * self.A.T).T
+                        * (betas[j + 1, :].T * self.O[:, X[i][j]])
+                    ) / denominator
 
             # Calculate each element of A using the M-step formulas.
+
+            # TODO: Both calculations can be parallelized by GPU, since they
+            #       depend only on index in array
 
             for a in range(self.L):
                 for b in range(self.L):
@@ -338,17 +303,11 @@ class HiddenMarkovModel:
 
         # choose a random start state
         states.append(random.randrange(self.L))
-        emission.append(
-            random.choices(range(self.D), weights=self.O[states[0]])[0]
-        )
+        emission.append(np.random.choice(self.L, p=self.O[states[0], :]))
 
         for j in range(1, M):
-            states.append(
-                random.choices(range(self.L), weights=self.A[states[j - 1]])[0]
-            )
-            emission.append(
-                random.choices(range(self.D), weights=self.O[states[j]])[0]
-            )
+            states.append(np.random.choice(self.L, p=self.A[states[j - 1], :]))
+            emission.append(np.random.choice(self.D, p=self.O[states[j], :]))
 
         return emission, states
 
@@ -370,7 +329,7 @@ class HiddenMarkovModel:
         # in j. Summing this value over all possible states j gives the
         # total probability of x paired with any state sequence, i.e.
         # the probability of x.
-        prob = sum(alphas[-1])
+        prob = np.sum(alphas[-1, :])
         return prob
 
     def probability_betas(self, x):
@@ -391,12 +350,8 @@ class HiddenMarkovModel:
         # probability and the observation probability, over all states
         # gives the total probability of x paired with any state
         # sequence, i.e. the probability of x.
-        prob = sum(
-            [
-                betas[1][j] * self.A_start[j] * self.O[j][x[0]]
-                for j in range(self.L)
-            ]
-        )
+
+        prob = np.sum(betas[1, :] * self.A_start * self.O[:, x[0]])
 
         return prob
 

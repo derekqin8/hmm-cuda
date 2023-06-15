@@ -3,7 +3,7 @@ import os, sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import utils
-import hmm
+import cuhmm
 import time
 
 
@@ -28,7 +28,7 @@ def sequence_probability(n):
     # For each input sequence:
     for seq in seqs:
         # Initialize an HMM.
-        HMM = hmm.HiddenMarkovModel(A, O)
+        HMM = cuhmm.CuHiddenMarkovModel(A, O)
 
         # Compute the probability of the input sequence.
         x = "".join([str(xi) for xi in seq])
@@ -44,4 +44,3 @@ for n in range(6):
     start = time.time()
     sequence_probability(n)
     print("Time to run: " + str(time.time() - start))
-    print("")

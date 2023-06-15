@@ -1,9 +1,9 @@
 import random
-import numpy as np
+import cupy as cp
 from tqdm import trange
 
 
-class HiddenMarkovModel:
+class CuHiddenMarkovModel:
     """
     Class implementation of Hidden Markov Models.
     """
@@ -39,15 +39,15 @@ class HiddenMarkovModel:
                         this distribution is uniform.
         """
 
-        self.A = np.array(A)
-        self.O = np.array(O)
+        self.A = cp.array(A)
+        self.O = cp.array(O)
         self.L = self.A.shape[0]
         assert self.A.shape[0] == self.A.shape[1]
 
         self.D = self.O.shape[1]
         assert self.O.shape[0] == self.L
 
-        self.A_start = np.ones(self.L) / self.L
+        self.A_start = cp.ones(self.L) / self.L
 
     def viterbi(self, x):
         """
@@ -66,7 +66,7 @@ class HiddenMarkovModel:
         # The (i, j)^th elements of probs and seqs are the max probability
         # of the prefix of length i ending in state j and the prefix
         # that gives this probability, respectively.
-        probs = np.zeros((M + 1, self.L))
+        probs = cp.zeros((M + 1, self.L))
         seqs = [["" for _ in range(self.L)] for _ in range(M + 1)]
 
         for a in range(self.L):
@@ -76,15 +76,12 @@ class HiddenMarkovModel:
 
         for j in range(2, M + 1):
             for a in range(self.L):
-                # TODO: use GPU element-wise multiplication
                 prob_vec = probs[j - 1, :] * self.A[:, a] * self.O[a, x[j - 1]]
 
-                probs[j, a] = np.max(prob_vec)
-                # TODO: use GPU argmax
-                seqs[j][a] = seqs[j - 1][np.argmax(prob_vec)] + str(a)
+                probs[j, a] = cp.max(prob_vec)
+                seqs[j][a] = seqs[j - 1][cp.argmax(prob_vec).get()] + str(a)
 
-        # TODO: use GPU argmax
-        max_seq = seqs[M][np.argmax(probs[M, :])]
+        max_seq = seqs[M][cp.argmax(probs[M, :]).get()]
         return max_seq
 
     def forward(self, x, normalize=False):
@@ -108,17 +105,15 @@ class HiddenMarkovModel:
         """
 
         M = len(x)  # Length of sequence.
-        alphas = np.zeros((M + 1, self.L))
+        alphas = cp.zeros((M + 1, self.L))
 
         alphas[1, :] = self.O[:, x[0]] * self.A_start
 
         for t in range(2, M + 1):
-            # TODO: GPU matrix multiplication and scalar multiplication
             alphas[t, :] = alphas[t - 1, :] @ self.A * self.O[:, x[t - 1]]
 
             if normalize:
-                # TODO: GPU matrix operations
-                C = np.sum(alphas[t, :])
+                C = cp.sum(alphas[t, :])
                 alphas[t, :] = alphas[t, :] / C
 
         return alphas
@@ -144,17 +139,15 @@ class HiddenMarkovModel:
         """
 
         M = len(x)  # Length of sequence.
-        betas = np.zeros((M + 1, self.L))
+        betas = cp.zeros((M + 1, self.L))
 
         betas[M, :] = 1.0
 
         for t in range(M - 1, 0, -1):
-            # TODO: replace with GPU matrix multiplication
             betas[t, :] = (betas[t + 1, :] * self.O[:, x[t]]) @ self.A.T
 
             if normalize:
-                # TODO: replace with GPU accelerated
-                C = np.sum(betas[t, :])
+                C = cp.sum(betas[t, :])
                 betas[t, :] = betas[t, :] / C
 
         return betas
@@ -181,8 +174,6 @@ class HiddenMarkovModel:
 
         # Calculate each element of A using the M-step formulas.
 
-        # TODO: This is all independent for each array index, so can be
-        #       parallelized
         for a in range(self.L):
             for b in range(self.L):
                 numerator = 0
@@ -227,10 +218,10 @@ class HiddenMarkovModel:
         # j is 0 indexed for these 2 arrays
 
         # marginal_state[i][j][a] = P(y^j = a, x_i)
-        marginal_state = [np.zeros((len(x), self.L)) for x in X]
+        marginal_state = [cp.zeros((len(x), self.L)) for x in X]
         # marginal_trans[i][j][a][b] = P(y^{j} = a, y^{j+1} = b, x_i)
         # starts at 1 and ends at M-1
-        marginal_trans = [np.zeros((len(x), self.L, self.L)) for x in X]
+        marginal_trans = [cp.zeros((len(x), self.L, self.L)) for x in X]
 
         for epoch in trange(N_iters):
             for i in range(len(X)):
@@ -259,9 +250,6 @@ class HiddenMarkovModel:
                     ) / denominator
 
             # Calculate each element of A using the M-step formulas.
-
-            # TODO: Both calculations can be parallelized by GPU, since they
-            #       depend only on index in array
 
             for a in range(self.L):
                 for b in range(self.L):
@@ -304,11 +292,11 @@ class HiddenMarkovModel:
 
         # choose a random start state
         states.append(random.randrange(self.L))
-        emission.append(np.random.choice(self.L, p=self.O[states[0], :]))
+        emission.append(cp.random.choice(self.L, p=self.O[states[0], :]))
 
         for j in range(1, M):
-            states.append(np.random.choice(self.L, p=self.A[states[j - 1], :]))
-            emission.append(np.random.choice(self.D, p=self.O[states[j], :]))
+            states.append(cp.random.choice(self.L, p=self.A[states[j - 1], :]))
+            emission.append(cp.random.choice(self.D, p=self.O[states[j], :]))
 
         return emission, states
 
@@ -330,7 +318,7 @@ class HiddenMarkovModel:
         # in j. Summing this value over all possible states j gives the
         # total probability of x paired with any state sequence, i.e.
         # the probability of x.
-        prob = np.sum(alphas[-1, :])
+        prob = cp.sum(alphas[-1, :])
         return prob
 
     def probability_betas(self, x):
@@ -352,7 +340,7 @@ class HiddenMarkovModel:
         # gives the total probability of x paired with any state
         # sequence, i.e. the probability of x.
 
-        prob = np.sum(betas[1, :] * self.A_start * self.O[:, x[0]])
+        prob = cp.sum(betas[1, :] * self.A_start * self.O[:, x[0]])
 
         return prob
 
@@ -403,13 +391,13 @@ def supervised_HMM(X, Y):
             O[i][j] /= norm
 
     # Train an HMM with labeled data.
-    HMM = HiddenMarkovModel(A, O)
+    HMM = CuHiddenMarkovModel(A, O)
     HMM.supervised_learning(X, Y)
 
     return HMM
 
 
-def unsupervised_HMM(X, n_states, N_iters, rng=np.random.RandomState(1)):
+def unsupervised_HMM(X, n_states, N_iters, rng=cp.random.RandomState(1)):
     """
     Helper function to train an unsupervised HMM. The function determines the
     number of unique observations in the given data, initializes
@@ -436,7 +424,7 @@ def unsupervised_HMM(X, n_states, N_iters, rng=np.random.RandomState(1)):
     D = len(observations)
 
     # Randomly initialize and normalize matrix A.
-    A = [[rng.random() for i in range(L)] for j in range(L)]
+    A = [[rng.rand() for i in range(L)] for j in range(L)]
 
     for i in range(len(A)):
         norm = sum(A[i])
@@ -444,7 +432,7 @@ def unsupervised_HMM(X, n_states, N_iters, rng=np.random.RandomState(1)):
             A[i][j] /= norm
 
     # Randomly initialize and normalize matrix O.
-    O = [[rng.random() for i in range(D)] for j in range(L)]
+    O = [[rng.rand() for i in range(D)] for j in range(L)]
 
     for i in range(len(O)):
         norm = sum(O[i])
@@ -452,7 +440,7 @@ def unsupervised_HMM(X, n_states, N_iters, rng=np.random.RandomState(1)):
             O[i][j] /= norm
 
     # Train an HMM with unlabeled data.
-    HMM = HiddenMarkovModel(A, O)
+    HMM = CuHiddenMarkovModel(A, O)
     HMM.unsupervised_learning(X, N_iters)
 
     return HMM

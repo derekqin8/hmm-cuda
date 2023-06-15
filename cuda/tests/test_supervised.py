@@ -3,26 +3,19 @@ import os, sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import utils
-import hmm
-import numpy as np
+import cuhmm
 import time
 
 
-def unsupervised_learning(n_states, N_iters, rng=np.random.RandomState(1)):
+def supervised_learning():
     """
     Trains an HMM using supervised learning on the file 'ron.txt' and
     prints the results.
-    Arguments:
-        n_states:   Number of hidden states that the HMM should have.
-        N_iters:    Number of EM steps taken.
-        rng:        The random number generator used. Default to 1.
     """
-    genres, genre_map = utils.Utility.load_ron_hidden()
+    moods, mood_map, genres, genre_map = utils.Utility.load_ron()
 
     # Train the HMM.
-    start = time.time()
-    HMM = hmm.unsupervised_HMM(genres, n_states, N_iters, rng=rng)
-    print("fit time for ", N_iters, "iterations:", time.time() - start)
+    HMM = cuhmm.supervised_HMM(genres, moods)
 
     # Print the transition matrix.
     print("Transition Matrix:")
@@ -49,5 +42,6 @@ def unsupervised_learning(n_states, N_iters, rng=np.random.RandomState(1)):
 
 
 start = time.time()
-unsupervised_learning(4, 1000, rng=np.random.RandomState(1))
+supervised_learning()
 print("Time to run: " + str(time.time() - start))
+print("")
